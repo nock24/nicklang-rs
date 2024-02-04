@@ -13,6 +13,9 @@ pub type Scope = Vec<ArenaPtr<Stmt>>;
 pub enum ParseErrorType {
     Expected(String),
     MismatchedTypes,
+    UndeclaredIdent(String),
+    CannotMutateImmutableVar(String),
+    IdentAlreadyUsed(String),
 }
 pub struct ParseError {
     type_: ParseErrorType,
@@ -99,21 +102,21 @@ pub struct Parser {
     tokens: Vec<Token>,
     idx: usize,
     allocator: ArenaAllocator,
+    vars: Vec<VarData>,
 }
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Parser {
         return Parser {
             tokens, 
             idx: 0,
-            allocator: ArenaAllocator::new(1 * MB)
+            allocator: ArenaAllocator::new(1 * MB),
+            vars: Vec::new(),
         }; 
     }
     pub fn error(&self, error_type: ParseErrorType) -> ParseError {
         let line_num = match self.peek(0) {
             Some(token) => token.line_num,
-            None => {
-                self.peek(-1).unwrap().line_num
-            }
+            None => self.peek(-1).unwrap().line_num,
         };
         return ParseError {type_: error_type, line_num};
     }
@@ -168,6 +171,7 @@ impl Parser {
                 _ => return Err(self.error(ParseErrorType::Expected("return type".to_string())))
             };
         }
+        self.vars.extend(params.clone());
         let scope = self.parse_scope()?;
         let def = self.allocator.alloc(Def::Func(func_ident, params, return_type, scope));
         return Ok(def);
@@ -198,6 +202,9 @@ impl Parser {
                     } else {
                         return Err(self.error(ParseErrorType::Expected("identifier".to_string())));
                     }
+                    if self.vars.iter().find(|x| x.ident == var_data.ident).is_some() {
+                        return Err(self.error(ParseErrorType::IdentAlreadyUsed(var_data.ident.clone())));
+                    }
                     self.try_consume(&TokenType::Colon)?;
                     if self.peek(0).is_some() {
                         var_data.type_ = match self.consume() {
@@ -208,7 +215,8 @@ impl Parser {
                         return Err(self.error(ParseErrorType::Expected("variable type".to_string())));
                     }
                     self.try_consume(&TokenType::Eq)?;
-                    let expr = self.parse_expr(0)?;
+                    let expr = self.parse_expr(&var_data.type_, 0)?;
+                    /*
                     let mismatched_types = match var_data.type_ {
                         Type::Int => {
                             if let Expr::Atom(ref atom) = *expr {
@@ -234,6 +242,8 @@ impl Parser {
                     if mismatched_types {
                         return Err(self.error(ParseErrorType::MismatchedTypes));
                     }
+                    */
+                    self.vars.push(var_data.clone());
                     let stmt = self.allocator.alloc(Stmt::Let(var_data, expr));
                     self.try_consume(&TokenType::SemiColon)?;
                     Ok(stmt)
@@ -241,7 +251,15 @@ impl Parser {
                 TokenType::Ident(ident) => {
                     self.consume();
                     self.try_consume(&TokenType::Eq)?;
-                    let expr = self.parse_expr(0)?;
+                    let var = if let Some(var) = self.vars.iter().find(|x| x.ident == *ident) {
+                        var.clone()
+                    } else {
+                        return Err(self.error(ParseErrorType::UndeclaredIdent(ident.clone()))); 
+                    };
+                    if !var.mutable {
+                        return Err(self.error(ParseErrorType::CannotMutateImmutableVar(ident.clone())));
+                    }
+                    let expr = self.parse_expr(&var.type_, 0)?;
                     let stmt = self.allocator.alloc(Stmt::Assign(ident.clone(), expr));
                     self.try_consume(&TokenType::SemiColon)?;
                     return Ok(stmt);
@@ -253,7 +271,7 @@ impl Parser {
                 }
                 TokenType::If => {
                     self.consume();
-                    let expr = self.parse_expr(0)?;
+                    let expr = self.parse_expr(&Type::Int, 0)?;
                     let scope = self.parse_scope()?;
                     let pred = self.parse_if_pred()?;
                     let stmt = self.allocator.alloc(Stmt::If(expr, scope, pred));
@@ -261,7 +279,7 @@ impl Parser {
                 }
                 TokenType::Return => {
                     self.consume();
-                    let expr = self.parse_expr(0)?;
+                    let expr = self.parse_expr(&Type::Int, 0)?;
                     self.try_consume(&TokenType::SemiColon)?;
                     let stmt = self.allocator.alloc(Stmt::Return(expr));
                     Ok(stmt)
@@ -278,7 +296,7 @@ impl Parser {
         return match inbuilt_type {
             TokenType::Exit => {
                 self.try_consume(&TokenType::OpenParen)?;
-                let expr = self.parse_expr(0)?;
+                let expr = self.parse_expr(&Type::Int, 0)?;
                 let inbuilt = self.allocator.alloc(InBuilt::Exit(expr));
                 let stmt = self.allocator.alloc(Stmt::InBuilt(inbuilt));
                 self.try_consume(&TokenType::CloseParen)?;
@@ -287,7 +305,7 @@ impl Parser {
             }
             TokenType::Print => {
                 self.try_consume(&TokenType::OpenParen)?;
-                let expr = self.parse_expr(0)?;
+                let expr = self.parse_expr(&Type::Int, 0)?;
                 let inbuilt = self.allocator.alloc(InBuilt::Print(expr));
                 let stmt = self.allocator.alloc(Stmt::InBuilt(inbuilt));
                 self.try_consume(&TokenType::CloseParen)?;
@@ -300,7 +318,7 @@ impl Parser {
     fn parse_if_pred(&mut self) -> Result<Option<ArenaPtr<IfPred>>> {
         if self.try_consume(&TokenType::Else).is_ok() {
             if self.try_consume(&TokenType::If).is_ok() {
-                let expr = self.parse_expr(0)?;
+                let expr = self.parse_expr(&Type::Int, 0)?;
                 let scope = self.parse_scope()?;
                 let pred = self.parse_if_pred()?;
                 let elseif = self.allocator.alloc(IfPred::ElseIf(expr, scope, pred));
@@ -329,14 +347,20 @@ impl Parser {
             }
         }
     }
-    fn parse_expr(&mut self, min_prec: u8) -> Result<ArenaPtr<Expr>> {
+    fn parse_expr(&mut self, expected_type: &Type, min_prec: u8) -> Result<ArenaPtr<Expr>> {
         let atom = self.parse_atom()?;
         if self.peek(0).is_none() {
             return Err(self.error(ParseErrorType::Expected("expression".to_string())));
         }
         if let Atom::StrLit(_) = *atom {
+            if expected_type != &Type::Str {
+                return Err(self.error(ParseErrorType::MismatchedTypes));
+            }
             let expr = self.allocator.alloc(Expr::Atom(atom));
             return Ok(expr);
+        }
+        if expected_type != &Type::Int {
+            return Err(self.error(ParseErrorType::MismatchedTypes));
         }
         let mut lhs;
         if self.peek(0).unwrap().type_ == TokenType::OpenParen {
@@ -344,7 +368,7 @@ impl Parser {
             if let Atom::Ident(ref func_ident) = *atom {
                 let mut params = Vec::new();
                 while self.peek(0).is_some() && self.peek(0).unwrap().type_ != TokenType::CloseParen {
-                    params.push(self.parse_expr(0)?);
+                    params.push(self.parse_expr(expected_type, 0)?);
                     if self.peek(0).is_some() && self.peek(0).unwrap().type_ == TokenType::CloseParen {
                         break;
                     }
@@ -371,7 +395,7 @@ impl Parser {
             } 
             self.consume();
             let next_min_prec = prec + 1;
-            let rhs = self.parse_expr(next_min_prec)?;
+            let rhs = self.parse_expr(expected_type, next_min_prec)?;
             let expr = self.allocator.alloc(Expr::BinExpr(lhs, operator.clone(), rhs));
             lhs = expr;
         }
@@ -395,7 +419,7 @@ impl Parser {
                 Ok(atom)
             }
             TokenType::OpenParen => {
-                let expr = self.parse_expr(0)?;
+                let expr = self.parse_expr(&Type::Int, 0)?;
                 self.try_consume(&TokenType::CloseParen)?;
                 let atom = self.allocator.alloc(Atom::Paren(expr));
                 Ok(atom)

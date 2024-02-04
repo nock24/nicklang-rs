@@ -1,7 +1,6 @@
 use crate::parser::*;
 use crate::arena::*;
 use crate::tokenizer::*;
-use std::collections::HashMap;
 use std::fmt;
 
 const NONE: Option<u8> = None;
@@ -17,10 +16,20 @@ type Result = std::result::Result<(), GenerationError>;
 
 #[derive(Debug)]
 pub enum GenerationError {
-    IdentAlredyUsed(String),
     UndeclaredIdent(String),
     NoMainFunction,
-    CannotMutateImmutableVar(String),
+    InvalidPushSize,
+    NotImplemented,
+}
+
+impl Type {
+    pub fn size(&self) -> usize {
+        match self {
+            &Type::Int => 8,    // 64 bit integer
+            &Type::Str => 16,   // 64 bit pointer and 64 bit length
+            &Type::Ptr => 8,    // 64 bit address
+        }
+    }
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -39,7 +48,6 @@ pub struct Generator {
     scopes: Vec<usize>,
     label_cnt: u64,
     str_cnt: u64,
-    str_lengths: HashMap<String, usize>,
     cur_func: String,
 }
 impl Generator {
@@ -53,12 +61,11 @@ impl Generator {
             scopes: Vec::new(),
             label_cnt: 0,
             str_cnt: 0,
-            str_lengths: HashMap::new(),
             cur_func: "main".to_string(),
         }; 
     }
     pub fn gen_prog(&mut self) -> Result {
-        self.output += "global _start\n_start:\n";
+        self.output += "section .text\n    global _start\n_start:\n";
         self.section_data += "section .data\n";
 
         let Some(main_func) = self.prog.defs.iter().find(|&f| {
@@ -92,23 +99,33 @@ impl Generator {
                     self.stack_sz += RET_ADDR_SZ;
                 }
                 self.output += &format!("{func_ident}:\n");
-                for (i, param_data) in params.iter().enumerate() {
-                    let offset = i * 2 * 8 + RET_ADDR_SZ;   
-                    self.push(&format!("QWORD [rsp + {offset}]"));
+                let mut offset = RET_ADDR_SZ;
+                for param_data in params.iter() {
+                    match param_data.type_ {
+                        Type::Int => {
+                            self.push(&format!("QWORD [rsp + {offset}]"));         // push 64 bit integer
+                        }
+                        Type::Str => {
+                            self.push(&format!("QWORD [rsp + {}]", offset + Type::Ptr.size()));         // push 64 bit string address
+                            self.push(&format!("QWORD [rsp + {}]", offset + Type::Ptr.size()));         // push 64 bit string length
+                        }
+                        _ => return Err(GenerationError::NotImplemented)
+                    }
                     self.vars.push(Var {
                         ident: param_data.ident.clone(), 
                         type_: param_data.type_.clone(),
                         mutable: param_data.mutable,
-                        stack_loc: self.stack_sz - 8
+                        stack_loc: self.stack_sz - param_data.type_.size()
                     });
+                    offset += 2 * param_data.type_.size();
                 }
                 self.gen_scope(scope.clone(), false)?;
                 self.output += &format!("{}_ret:\n", self.cur_func);
                 self.end_scope();
                 if func_ident != "main" {
-                    let params_sz = params.len() * 8;
-                    self.directive("add", "rsp", Some(params_sz));
-                    self.stack_sz -= params_sz;
+                    let params_size: usize = params.iter().map(|x| x.type_.size()).sum();
+                    self.directive("add", "rsp", Some(params_size));
+                    self.stack_sz -= params_size;
                     self.stack_sz -= RET_ADDR_SZ;
                 }
                 if func_ident != "main" {
@@ -124,30 +141,32 @@ impl Generator {
                 self.gen_inbuilt(inbuilt.clone())?;
             }
             Stmt::Let(ref var_data, ref expr) => {
-                if self.vars.iter().find(|x| x.ident == *var_data.ident).is_some() {
-                    return Err(GenerationError::IdentAlredyUsed(var_data.ident.clone()));
-                }
                 self.gen_expr(expr.clone())?;
                 self.vars.push(Var {
                     ident: var_data.ident.clone(), 
                     type_: var_data.type_.clone(),
                     mutable: var_data.mutable,
-                    stack_loc: self.stack_sz - 8
+                    stack_loc: self.stack_sz - var_data.type_.size()
                 });
             }
             Stmt::Assign(ref ident, ref expr) => {
-                let var = if let Some(var) = self.vars.iter().find(|x| x.ident == *ident) {
-                    var.clone()
-                } else {
-                    return Err(GenerationError::UndeclaredIdent(ident.clone()));
-                };
-                if !var.mutable {
-                    return Err(GenerationError::CannotMutateImmutableVar(var.ident.clone()));
-                }
+                let var = self.vars.iter().find(|x| x.ident == *ident).unwrap().clone();
                 self.gen_expr(expr.clone())?;
-                self.pop("rax");
-                let offset = self.stack_sz - var.stack_loc - 8;
-                self.directive("mov", &format!("[rsp + {offset}]"), Some("rax"));
+                match var.type_ {
+                    Type::Int => {
+                        let offset = self.stack_sz - var.stack_loc - Type::Int.size();
+                        self.pop("rax");
+                        self.directive("mov", &format!("[rsp + {offset}]"), Some("rax"));
+                    }
+                    Type::Str => {
+                        let offset = self.stack_sz - var.stack_loc - Type::Int.size();
+                        self.pop("rbx");      // pop off 64 bit string length
+                        self.pop("rax");      // pop off 64 bit string address
+                        self.directive("mov", &format!("[rsp + {offset}]"), Some("rax"));
+                        self.directive("mov", &format!("[rsp + {offset}]"), Some("rbx"));
+                    }
+                    _ => return Err(GenerationError::NotImplemented)
+                }
             }
             Stmt::Scope(ref scope) => {
                 self.gen_scope(scope.to_vec(), true)?;
@@ -188,10 +207,10 @@ impl Generator {
             }
             InBuilt::Print(ref expr) => {
                 self.gen_expr(expr.clone())?;
+                self.pop("rdx");
                 self.pop("rsi");
                 self.directive("mov", "rax", Some(SYS_WRITE));
                 self.directive("mov", "rdi", Some(STDOUT));
-                self.directive("mov", "rdx", Some(6));
                 self.output += "    syscall\n";
             }
         }
@@ -270,10 +289,16 @@ impl Generator {
                 for param in params.iter().rev() {
                     self.gen_expr(param.clone())?;
                 }
+                let Def::Func(_, ref param_data, ..) = *self.prog.defs.iter().find(|&f| {
+                    let Def::Func(ref ident, ..) = *f.clone() else {
+                        return false;
+                    };
+                    return ident == func_ident;
+                }).unwrap().clone();
+                let params_size: usize = param_data.iter().map(|x| x.type_.size()).sum();
                 self.directive("call", func_ident, NONE);
-                let params_sz = params.len() * 8;
-                self.directive("add", "rsp", Some(params_sz));
-                self.stack_sz -= params_sz;
+                self.directive("add", "rsp", Some(params_size));
+                self.stack_sz -= params_size;
                 self.push("rax");
             }
         }    
@@ -282,12 +307,19 @@ impl Generator {
     fn gen_atom(&mut self, atom: ArenaPtr<Atom>) -> Result {
         match *atom {
             Atom::Ident(ref ident) => {
-                let var = self.vars.iter().find(|x| x.ident == *ident);
-                if var.is_none() {
-                    return Err(GenerationError::UndeclaredIdent(ident.clone()));
+                let var = self.vars.iter().find(|x| x.ident == *ident).unwrap();
+                match var.type_ {
+                    Type::Int => {
+                        let offset = self.stack_sz - var.stack_loc - Type::Int.size();
+                        self.push(&format!("QWORD [rsp + {offset}]"));        // push 64 bit integer
+                    }
+                    Type::Str => {
+                        let offset = self.stack_sz - var.stack_loc - Type::Int.size();
+                        self.push(&format!("QWORD [rsp + {offset}]"));        // push 64 bit address
+                        self.push(&format!("QWORD [rsp + {offset}]"));  // push 64 bit length
+                    }
+                    _ => return Err(GenerationError::NotImplemented)
                 }
-                let offset = self.stack_sz - var.unwrap().stack_loc - 8;
-                self.push(&format!("QWORD [rsp + {offset}]"));
             }
             Atom::IntLit(int) => {
                 self.directive("mov", "rax", Some(int));
@@ -300,6 +332,7 @@ impl Generator {
                 let str_ident = self.create_string();
                 self.define_str(&str_ident, str);
                 self.push(&str_ident);
+                self.push(&format!("QWORD {}", str.len()));
             }
         }
         return Ok(());
@@ -331,14 +364,30 @@ impl Generator {
         }
     }
     fn define_str(&mut self, ident: &str, input: &str) {
-        self.section_data += &format!("    {ident} db \"{input}\", 0\n");
+        let mut output = format!("{ident} db \"");
+        let mut i = 0;
+        while i < input.len() {
+            if input.chars().nth(i).unwrap() == '\\' && input.chars().nth(i + 1).unwrap() == 'n' {
+                output += "\", 10, \"";
+                i += 1;
+            } else {
+                output += &input.chars().nth(i).unwrap().to_string();
+            }
+            i += 1;
+        }
+        output += "\", 0\n";
+        self.section_data += &output;
     }
-    fn push(&mut self, reg: &str) {
-        self.output += &format!("    push {reg}\n");
+    fn push(&mut self, item: &str) {
+        self.output += &format!("    push {item}\n");
         self.stack_sz += 8;
     }
     fn pop(&mut self, reg: &str) {
         self.output += &format!("    pop {reg}\n");
-        self.stack_sz -= 8;
+        if reg.chars().nth(0).unwrap() == 'r' {
+            self.stack_sz -= 8;
+        } else {
+            self.stack_sz -= 4;
+        }
     }
 }

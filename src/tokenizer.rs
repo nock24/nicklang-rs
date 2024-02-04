@@ -74,6 +74,7 @@ pub enum Op {
 pub enum Type { 
     Int,
     Str,
+    Ptr,
 }
 pub struct Tokenizer {
     src: String,
