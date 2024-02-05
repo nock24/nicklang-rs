@@ -1,6 +1,6 @@
-fn f(s: str) {
-    print(s);
+fn f(s: str) -> str {
+    return s;
 }
 fn main() {
-    f("hi\n");
+    print(f("hello"));
 }

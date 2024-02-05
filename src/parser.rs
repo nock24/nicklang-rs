@@ -306,7 +306,7 @@ impl Parser {
             }
             TokenType::Print => {
                 self.try_consume(&TokenType::OpenParen)?;
-                let expr = self.parse_expr(&Type::Int, 0)?;
+                let expr = self.parse_expr(&Type::Str, 0)?;
                 let inbuilt = self.allocator.alloc(InBuilt::Print(expr));
                 let stmt = self.allocator.alloc(Stmt::InBuilt(inbuilt));
                 self.try_consume(&TokenType::CloseParen)?;
@@ -355,7 +355,6 @@ impl Parser {
         }
         if let Atom::StrLit(_) = *atom {
             if expected_type != &Type::Str {
-                println!("{atom:?}");
                 return Err(self.error(ParseErrorType::MismatchedTypes));
             }
             let expr = self.allocator.alloc(Expr::Atom(atom));
