@@ -16,6 +16,8 @@ pub enum ParseErrorType {
     UndeclaredIdent(String),
     CannotMutateImmutableVar(String),
     IdentAlreadyUsed(String),
+    UndeclaredFunc(String),
+    CannotReturnInVoidFunc,
 }
 pub struct ParseError {
     type_: ParseErrorType,
@@ -34,6 +36,14 @@ fn get_prec(token: TokenType) -> Option<(Op, u8)> {
         TokenType::Op(Op::Slash) => Some((Op::Slash, 1)),
         _ => None
     } 
+}
+impl Type {
+    pub fn is_null(&self) -> bool {
+        return match self {
+            Type::Null => true,
+            _ => false,
+        };
+    }
 }
 #[derive(Clone, Debug)]
 pub struct VarData {
@@ -64,7 +74,7 @@ pub struct Prog {
 }
 #[derive(Debug, Clone)]
 pub enum Def {
-    Func(String, Vec<VarData>, Option<Type>, Scope),
+    Func(String, Vec<VarData>, Type, Scope),
 }
 #[derive(Debug, Clone)]
 pub enum Stmt {
@@ -74,6 +84,7 @@ pub enum Stmt {
     Scope(Scope),
     If(ArenaPtr<Expr>, Scope, Option<ArenaPtr<IfPred>>),
     Return(ArenaPtr<Expr>),
+    VoidFuncCall(ArenaPtr<Expr>),
 }
 #[derive(Debug, Clone)]
 pub enum InBuilt {
@@ -103,6 +114,8 @@ pub struct Parser {
     idx: usize,
     allocator: ArenaAllocator,
     vars: Vec<VarData>,
+    defs: Vec<ArenaPtr<Def>>,
+    cur_func_ret_type: Type,
 }
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Parser {
@@ -111,6 +124,8 @@ impl Parser {
             idx: 0,
             allocator: ArenaAllocator::new(1 * MB),
             vars: Vec::new(),
+            defs: Vec::new(),
+            cur_func_ret_type: Type::Null,
         }; 
     }
     pub fn error(&self, error_type: ParseErrorType) -> ParseError {
@@ -121,11 +136,11 @@ impl Parser {
         return ParseError {type_: error_type, line_num};
     }
     pub fn parse_prog(&mut self) -> Result<Prog> {
-        let mut prog = Prog {defs: Vec::new()};
         while self.peek(0).is_some() {
             let def = self.parse_def()?;
-            prog.defs.push(def); 
+            self.defs.push(def);
         }
+        let prog = Prog {defs: self.defs.clone()};
         return Ok(prog);
     }
     fn parse_def(&mut self) -> Result<ArenaPtr<Def>> {
@@ -164,14 +179,15 @@ impl Parser {
             self.try_consume(&TokenType::Comma)?;
         }
         self.consume();
-        let mut return_type = None;
+        let mut return_type = Type::Null;
         if self.try_consume(&TokenType::Arrow).is_ok() {
             return_type = match self.consume() {
-                TokenType::Type(type_) => Some(type_),
+                TokenType::Type(type_) => type_,
                 _ => return Err(self.error(ParseErrorType::Expected("return type".to_string())))
             };
         }
         self.vars.extend(params.clone());
+        self.cur_func_ret_type = return_type.clone();
         let scope = self.parse_scope()?;
         let def = self.allocator.alloc(Def::Func(func_ident, params, return_type, scope));
         return Ok(def);
@@ -216,53 +232,37 @@ impl Parser {
                     }
                     self.try_consume(&TokenType::Eq)?;
                     let expr = self.parse_expr(&var_data.type_, 0)?;
-                    /*
-                    let mismatched_types = match var_data.type_ {
-                        Type::Int => {
-                            if let Expr::Atom(ref atom) = *expr {
-                                match *atom.clone() {
-                                    Atom::StrLit(_) => true,
-                                    _ => false,
-                                }
-                            } else {
-                                true
-                            }
-                        } 
-                        Type::Str => {
-                            if let Expr::Atom(ref atom) = *expr {
-                                match *atom.clone() {
-                                    Atom::StrLit(_) => false,
-                                    _ => true,
-                                }
-                            } else {
-                                true
-                            }
-                        }
-                    };
-                    if mismatched_types {
-                        return Err(self.error(ParseErrorType::MismatchedTypes));
-                    }
-                    */
                     self.vars.push(var_data.clone());
                     let stmt = self.allocator.alloc(Stmt::Let(var_data, expr));
                     self.try_consume(&TokenType::SemiColon)?;
                     Ok(stmt)
                 }
                 TokenType::Ident(ident) => {
-                    self.consume();
-                    self.try_consume(&TokenType::Eq)?;
-                    let var = if let Some(var) = self.vars.iter().find(|x| x.ident == *ident) {
-                        var.clone()
-                    } else {
-                        return Err(self.error(ParseErrorType::UndeclaredIdent(ident.clone()))); 
-                    };
-                    if !var.mutable {
-                        return Err(self.error(ParseErrorType::CannotMutateImmutableVar(ident.clone())));
+                    if self.peek(1).is_none() {
+                        return Err(self.error(ParseErrorType::Expected("var declaration or void func call".to_string())));
                     }
-                    let expr = self.parse_expr(&var.type_, 0)?;
-                    let stmt = self.allocator.alloc(Stmt::Assign(ident.clone(), expr));
-                    self.try_consume(&TokenType::SemiColon)?;
-                    return Ok(stmt);
+                    if self.peek(1).unwrap().type_ == TokenType::Eq {
+                        self.consume();
+                        self.consume();
+                        let var = if let Some(var) = self.vars.iter().find(|x| x.ident == *ident) {
+                            var.clone()
+                        } else {
+                            return Err(self.error(ParseErrorType::UndeclaredIdent(ident.clone()))); 
+                        };
+                        if !var.mutable {
+                            return Err(self.error(ParseErrorType::CannotMutateImmutableVar(ident.clone())));
+                        }
+                        let expr = self.parse_expr(&var.type_, 0)?;
+                        let stmt = self.allocator.alloc(Stmt::Assign(ident.clone(), expr));
+                        self.try_consume(&TokenType::SemiColon)?;
+                        return Ok(stmt);
+                    } else if self.peek(1).unwrap().type_ == TokenType::OpenParen {
+                        let expr = self.parse_expr(&Type::Null, 0)?;
+                        let stmt = self.allocator.alloc(Stmt::VoidFuncCall(expr));
+                        self.try_consume(&TokenType::SemiColon)?;
+                        return Ok(stmt);
+                    } 
+                    return Err(self.error(ParseErrorType::Expected("var declaration or void func call".to_string())));
                 }
                 TokenType::OpenCurly => {
                     let scope = self.parse_scope()?;
@@ -279,14 +279,15 @@ impl Parser {
                 }
                 TokenType::Return => {
                     self.consume();
-                    let expr = self.parse_expr(&Type::Int, 0)?;
+                    if self.cur_func_ret_type.is_null() {
+                        return Err(self.error(ParseErrorType::CannotReturnInVoidFunc));
+                    }
+                    let expr = self.parse_expr(&self.cur_func_ret_type.clone(), 0)?;
                     self.try_consume(&TokenType::SemiColon)?;
                     let stmt = self.allocator.alloc(Stmt::Return(expr));
                     Ok(stmt)
                 }
-                _ => {
-                    Err(self.error(ParseErrorType::Expected("statement".to_string())))
-                }
+                _ => Err(self.error(ParseErrorType::Expected("statement".to_string())))
             }
         } else {
             return Err(self.error(ParseErrorType::Expected("statement".to_string())));
@@ -354,28 +355,45 @@ impl Parser {
         }
         if let Atom::StrLit(_) = *atom {
             if expected_type != &Type::Str {
+                println!("{atom:?}");
                 return Err(self.error(ParseErrorType::MismatchedTypes));
             }
             let expr = self.allocator.alloc(Expr::Atom(atom));
             return Ok(expr);
         }
-        if expected_type != &Type::Int {
-            return Err(self.error(ParseErrorType::MismatchedTypes));
-        }
         let mut lhs;
         if self.peek(0).unwrap().type_ == TokenType::OpenParen {
             self.consume();
             if let Atom::Ident(ref func_ident) = *atom {
+                let mut param_types = Vec::new();
+                let Some(func) = self.defs.iter().find(|&f| {
+                    let Def::Func(ref ident, ref param_data, ..) = *f.clone() else {
+                        return false;
+                    };
+                    param_types = param_data.iter().map(|x| x.type_.clone()).collect();
+                    return ident == func_ident;
+                }) else {
+                    return Err(self.error(ParseErrorType::UndeclaredFunc(func_ident.clone())));
+                };
+                let Def::Func(.., ref ret_type, _) = *func.clone(); 
+                if ret_type != expected_type {
+                    return Err(self.error(ParseErrorType::MismatchedTypes));
+                }
                 let mut params = Vec::new();
+                let mut i = 0;
                 while self.peek(0).is_some() && self.peek(0).unwrap().type_ != TokenType::CloseParen {
-                    params.push(self.parse_expr(expected_type, 0)?);
+                    params.push(self.parse_expr(&param_types[i], 0)?);
                     if self.peek(0).is_some() && self.peek(0).unwrap().type_ == TokenType::CloseParen {
                         break;
                     }
                     self.try_consume(&TokenType::Comma)?;
+                    i += 1;
                 }
-                self.consume();
+                self.consume(); 
                 lhs = self.allocator.alloc(Expr::FuncCall(func_ident.to_string(), params));
+                if ret_type.is_null() {
+                    return Ok(lhs);
+                }
             } else {
                 return Err(self.error(ParseErrorType::Expected("identifier".to_string())));
             }

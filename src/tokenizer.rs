@@ -75,6 +75,7 @@ pub enum Type {
     Int,
     Str,
     Ptr,
+    Null,
 }
 pub struct Tokenizer {
     src: String,

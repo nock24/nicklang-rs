@@ -16,9 +16,7 @@ type Result = std::result::Result<(), GenerationError>;
 
 #[derive(Debug)]
 pub enum GenerationError {
-    UndeclaredIdent(String),
     NoMainFunction,
-    InvalidPushSize,
     NotImplemented,
 }
 
@@ -28,6 +26,7 @@ impl Type {
             &Type::Int => 8,    // 64 bit integer
             &Type::Str => 16,   // 64 bit pointer and 64 bit length
             &Type::Ptr => 8,    // 64 bit address
+            &Type::Null => 0,
         }
     }
 }
@@ -142,6 +141,7 @@ impl Generator {
             }
             Stmt::Let(ref var_data, ref expr) => {
                 self.gen_expr(expr.clone())?;
+                println!("{}", self.stack_sz);
                 self.vars.push(Var {
                     ident: var_data.ident.clone(), 
                     type_: var_data.type_.clone(),
@@ -190,9 +190,26 @@ impl Generator {
             }
             Stmt::Return(ref expr) => {
                 self.gen_expr(expr.clone())?;
-                self.pop("rax");
+                let func = self.prog.defs.iter().find(|&f| {
+                    let Def::Func(ref ident, ..) = *f.clone() else {
+                        return false;
+                    };
+                    return ident == &self.cur_func;
+                }).unwrap();
+                let Def::Func(.., ref ret_type, _) = *func.clone();
+                match ret_type {
+                    &Type::Int => self.pop("rax"),
+                    &Type::Str => {
+                        self.pop("rbx");
+                        self.pop("rax");
+                    }
+                    _ => return Err(GenerationError::NotImplemented)
+                }
                 let ret_label = &format!("{}_ret", self.cur_func);
                 self.directive("jmp", ret_label, NONE);
+            }
+            Stmt::VoidFuncCall(ref expr) => {
+                self.gen_expr(expr.clone())?;   
             }
         }
         return Ok(());
@@ -289,7 +306,7 @@ impl Generator {
                 for param in params.iter().rev() {
                     self.gen_expr(param.clone())?;
                 }
-                let Def::Func(_, ref param_data, ..) = *self.prog.defs.iter().find(|&f| {
+                let Def::Func(_, ref param_data, ref ret_type, _) = *self.prog.defs.iter().find(|&f| {
                     let Def::Func(ref ident, ..) = *f.clone() else {
                         return false;
                     };
@@ -299,7 +316,16 @@ impl Generator {
                 self.directive("call", func_ident, NONE);
                 self.directive("add", "rsp", Some(params_size));
                 self.stack_sz -= params_size;
-                self.push("rax");
+                if !ret_type.is_null() {
+                    match ret_type {
+                        Type::Int => self.push("rax"),
+                        Type::Str => {
+                            self.push("rax");
+                            self.push("rbx");
+                        }
+                        _ => return Err(GenerationError::NotImplemented)
+                    }
+                }
             }
         }    
         return Ok(());
