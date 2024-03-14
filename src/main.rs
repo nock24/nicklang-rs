@@ -23,11 +23,10 @@ fn check_args() -> String {
     let args = env::args().collect::<Vec<_>>();
     if args.len() == 2 {
         return args[1].clone();
-    } else {
-        eprintln!("Incorrect usage.");
-        eprintln!("Correct usage: cargo run -- <build_dir>");
-        process::exit(-1);
     }
+    eprintln!("Incorrect usage.");
+    eprintln!("Correct usage: cargo run -- <build_dir>");
+    process::exit(-1);
 }
 fn compile(build_dir: &str) {
     let input_file = fs::read_to_string(format!("main.nk")).unwrap();

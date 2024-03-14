@@ -1,6 +1,10 @@
-fn f(s: str) -> str {
-    return s;
-}
 fn main() {
-    print(f("hello"));
+    for i in 0->10 {
+        let x: int = i;
+        if x {
+            printf("first\n");
+        } else {
+            printf("hello\n");
+        }
+    }
 }

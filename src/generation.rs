@@ -51,7 +51,7 @@ pub struct Generator {
 }
 impl Generator {
     pub fn new(prog: Prog) -> Generator {
-        return Generator {
+        Generator {
             prog, 
             output: String::new(),
             section_data: String::new(),
@@ -61,17 +61,17 @@ impl Generator {
             label_cnt: 0,
             str_cnt: 0,
             cur_func: "main".to_string(),
-        }; 
+        }
     }
     pub fn gen_prog(&mut self) -> Result {
-        self.output += "section .text\n    global _start\n_start:\n";
+        self.output += "section .text\nglobal _start\n_start:\n";
         self.section_data += "section .data\n";
 
         let Some(main_func) = self.prog.defs.iter().find(|&f| {
             let Def::Func(ref ident, ..) = *f.clone() else {
                 return false;
             };
-            return ident == "main";
+            ident == "main"
         }) else {
             return Err(GenerationError::NoMainFunction);
         };
@@ -89,7 +89,7 @@ impl Generator {
             } 
         }
         self.output = self.section_data.clone() + &self.output;
-        return Ok(());
+        Ok(())
     }
     fn gen_def(&mut self, def: ArenaPtr<Def>) -> Result {
         match *def {
@@ -132,7 +132,7 @@ impl Generator {
                 }
             }
         }
-        return Ok(());
+        Ok(())
     }
     fn gen_stmt(&mut self, stmt: ArenaPtr<Stmt>) -> Result {
         match *stmt {
@@ -141,7 +141,6 @@ impl Generator {
             }
             Stmt::Let(ref var_data, ref expr) => {
                 self.gen_expr(expr.clone())?;
-                println!("{}", self.stack_sz);
                 self.vars.push(Var {
                     ident: var_data.ident.clone(), 
                     type_: var_data.type_.clone(),
@@ -171,6 +170,34 @@ impl Generator {
             Stmt::Scope(ref scope) => {
                 self.gen_scope(scope.to_vec(), true)?;
             }
+            Stmt::For(ref idx_ident, ref start, ref end, ref scope) => {
+                self.gen_expr(start.clone())?;
+                let idx_loc = self.stack_sz - Type::Int.size();
+                self.vars.push(Var {
+                    ident: idx_ident.clone(),
+                    type_: Type::Int,
+                    mutable: false,
+                    stack_loc: idx_loc,
+                });
+                
+                self.gen_expr(end.clone())?;
+                let end_val_loc = self.stack_sz - Type::Int.size(); 
+
+                let label = self.create_label();
+                self.output += &format!("{label}:\n");
+
+                self.gen_scope(scope.to_vec(), true)?;
+
+                let idx_offset = self.stack_sz - idx_loc - Type::Int.size();
+                self.directive("inc", &format!("QWORD [rsp + {idx_offset}]"), NONE);
+                self.directive("mov", "rax", Some(&format!("[rsp + {idx_offset}]")));
+
+                let end_val_offset = self.stack_sz - end_val_loc - Type::Int.size();
+                self.directive("mov", "rbx", Some(&format!("[rsp + {end_val_offset}]")));
+
+                self.directive("cmp", "rax", Some("rbx"));
+                self.directive("jnz", &label, NONE);
+            }
             Stmt::If(ref expr, ref scope, ref pred) => {
                 self.gen_expr(expr.clone())?;
                 self.pop("rax");
@@ -194,7 +221,7 @@ impl Generator {
                     let Def::Func(ref ident, ..) = *f.clone() else {
                         return false;
                     };
-                    return ident == &self.cur_func;
+                    ident == &self.cur_func
                 }).unwrap();
                 let Def::Func(.., ref ret_type, _) = *func.clone();
                 match ret_type {
@@ -212,7 +239,7 @@ impl Generator {
                 self.gen_expr(expr.clone())?;   
             }
         }
-        return Ok(());
+        Ok(())
     }
     fn gen_inbuilt(&mut self, func_call: ArenaPtr<InBuilt>) -> Result {
         match *func_call {
@@ -222,7 +249,7 @@ impl Generator {
                 self.directive("mov", "rax", Some(SYS_EXIT));
                 self.output += "    syscall\n";
             }
-            InBuilt::Print(ref expr) => {
+            InBuilt::Printf(ref expr) => {
                 self.gen_expr(expr.clone())?;
                 self.pop("rdx");
                 self.pop("rsi");
@@ -231,7 +258,7 @@ impl Generator {
                 self.output += "    syscall\n";
             }
         }
-        return Ok(());
+        Ok(())
     }
     fn gen_if_pred(&mut self, if_pred: ArenaPtr<IfPred>, end_label: &str) -> Result {
         match *if_pred {
@@ -252,7 +279,7 @@ impl Generator {
                 self.gen_scope(scope.to_vec(), true)?;
             }
         }
-        return Ok(());
+        Ok(())
     }
     fn gen_scope(&mut self, scope: Scope, end_scope: bool) -> Result {
         self.begin_scope();
@@ -262,7 +289,7 @@ impl Generator {
         if end_scope {
             self.end_scope();
         }
-        return Ok(());
+        Ok(())
     }
     fn gen_expr(&mut self, expr: ArenaPtr<Expr>) -> Result {
         match *expr {
@@ -310,7 +337,7 @@ impl Generator {
                     let Def::Func(ref ident, ..) = *f.clone() else {
                         return false;
                     };
-                    return ident == func_ident;
+                    ident == func_ident
                 }).unwrap().clone();
                 let params_size: usize = param_data.iter().map(|x| x.type_.size()).sum();
                 self.directive("call", func_ident, NONE);
@@ -328,7 +355,7 @@ impl Generator {
                 }
             }
         }    
-        return Ok(());
+        Ok(())
     }
     fn gen_atom(&mut self, atom: ArenaPtr<Atom>) -> Result {
         match *atom {
@@ -342,7 +369,7 @@ impl Generator {
                     Type::Str => {
                         let offset = self.stack_sz - var.stack_loc - Type::Int.size();
                         self.push(&format!("QWORD [rsp + {offset}]"));        // push 64 bit address
-                        self.push(&format!("QWORD [rsp + {offset}]"));  // push 64 bit length
+                        self.push(&format!("QWORD [rsp + {offset}]"));        // push 64 bit length
                     }
                     _ => return Err(GenerationError::NotImplemented)
                 }
@@ -361,7 +388,7 @@ impl Generator {
                 self.push(&format!("QWORD {}", str.len()));
             }
         }
-        return Ok(());
+        Ok(())
     }
     fn begin_scope(&mut self) {
         self.scopes.push(self.vars.len());
@@ -376,11 +403,11 @@ impl Generator {
     }
     fn create_label(&mut self) -> String {
         self.label_cnt += 1;
-        return format!("label{}", self.label_cnt);
+        format!("label{}", self.label_cnt)
     }
     fn create_string(&mut self) -> String {
         self.str_cnt += 1;
-        return format!("str{}", self.str_cnt);
+        format!("str{}", self.str_cnt)
     }
     fn directive<T: fmt::Display>(&mut self, directive: &str, reg: &str, input: Option<T>) {
         if let Some(input) = input {
@@ -390,7 +417,7 @@ impl Generator {
         }
     }
     fn define_str(&mut self, ident: &str, input: &str) {
-        let mut output = format!("{ident} db \"");
+        let mut output = format!("    {ident} db \"");
         let mut i = 0;
         while i < input.len() {
             if input.chars().nth(i).unwrap() == '\\' && input.chars().nth(i + 1).unwrap() == 'n' {

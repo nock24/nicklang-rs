@@ -16,7 +16,7 @@ pub enum TokenType {
 
     // inbuilt functions
     Exit,           
-    Print,
+    Printf,
 
     // definition keywords
     Func,
@@ -25,6 +25,8 @@ pub enum TokenType {
     If,             
     Else,           
     Return,
+    For,
+    In,
 
     // other keywords
     Type(Type),
@@ -50,7 +52,7 @@ pub struct Token {
 }
 impl PartialEq for Token {
     fn eq(&self, rhs: &Token) -> bool {
-        return self.type_ == rhs.type_;
+        self.type_ == rhs.type_
     }
 }
 impl fmt::Debug for Token {
@@ -60,7 +62,7 @@ impl fmt::Debug for Token {
 }
 impl Token {
     pub fn new(token_type: TokenType, line_num: u32) -> Token {
-        return Token {type_: token_type, line_num};
+        Token {type_: token_type, line_num}
     }
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -84,7 +86,7 @@ pub struct Tokenizer {
 }
 impl Tokenizer {
     pub fn new(src: String) -> Tokenizer {
-        return Tokenizer {src, idx: 0, line_cnt: 1}; 
+        Tokenizer {src, idx: 0, line_cnt: 1 }
     }
     pub fn tokenize(&mut self) -> Result<Vec<Token>, TokenizationError> {
         let mut tokens: Vec<Token> = Vec::new();
@@ -101,11 +103,13 @@ impl Tokenizer {
                     "let" => TokenType::Let,
                     "if" => TokenType::If,
                     "else" => TokenType::Else,
+                    "for" => TokenType::For,
                     "int" => TokenType::Type(Type::Int),
                     "str" => TokenType::Type(Type::Str),
                     "return" => TokenType::Return,
                     "mut" => TokenType::Mut,
-                    "print" => TokenType::Print,
+                    "printf" => TokenType::Printf,
+                    "in" => TokenType::In,
                     _ => TokenType::Ident(buf.clone())
                 }, self.line_cnt));
                 buf.clear();
@@ -183,13 +187,13 @@ impl Tokenizer {
             }
         }
         self.idx = 0;
-        return Ok(tokens);
+        Ok(tokens)
     }
     fn peek(&self, offset: usize) -> Option<char> {
-        return self.src.chars().nth(self.idx + offset);
+        self.src.chars().nth(self.idx + offset)
     }
     fn consume(&mut self) -> char {
         self.idx += 1;
-        return self.src.chars().nth(self.idx - 1).unwrap();
+        self.src.chars().nth(self.idx - 1).unwrap()
     }
 }
