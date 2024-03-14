@@ -29,7 +29,7 @@ impl fmt::Debug for ParseError {
     }
 }
 fn get_prec(token: TokenType) -> Option<(Op, u8)> {
-    return match token {
+    match token {
         TokenType::Op(Op::Plus) => Some((Op::Plus, 0)),
         TokenType::Op(Op::Minus) => Some((Op::Minus, 0)),
         TokenType::Op(Op::Star) => Some((Op::Star, 1)),
@@ -39,10 +39,10 @@ fn get_prec(token: TokenType) -> Option<(Op, u8)> {
 }
 impl Type {
     pub fn is_null(&self) -> bool {
-        return match self {
+        match self {
             Type::Null => true,
             _ => false,
-        };
+        }
     }
 }
 #[derive(Clone, Debug)]
@@ -53,19 +53,19 @@ pub struct VarData {
 }
 impl VarData {
     pub fn new() -> VarData {
-        return VarData {
+        VarData {
             ident: String::new(),
             type_: Type::Int,
             mutable: false,
-        };
+        }
     }
 }
 impl TokenType {
     pub fn is_inbuilt(&self) -> bool {
-        return match self {
-            TokenType::Exit | TokenType::Print => true,
+        match self {
+            TokenType::Exit | TokenType::Printf => true,
             _ => false,
-        };
+        }
     }
 }
 #[derive(Debug)]
@@ -82,6 +82,7 @@ pub enum Stmt {
     Let(VarData, ArenaPtr<Expr>),
     Assign(String, ArenaPtr<Expr>),
     Scope(Scope),
+    For(String, ArenaPtr<Expr>, ArenaPtr<Expr>, Scope),
     If(ArenaPtr<Expr>, Scope, Option<ArenaPtr<IfPred>>),
     Return(ArenaPtr<Expr>),
     VoidFuncCall(ArenaPtr<Expr>),
@@ -89,7 +90,7 @@ pub enum Stmt {
 #[derive(Debug, Clone)]
 pub enum InBuilt {
     Exit(ArenaPtr<Expr>),
-    Print(ArenaPtr<Expr>),
+    Printf(ArenaPtr<Expr>),
 }
 #[derive(Debug, Clone)]
 pub enum IfPred {
@@ -119,21 +120,21 @@ pub struct Parser {
 }
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Parser {
-        return Parser {
+        Parser {
             tokens, 
             idx: 0,
             allocator: ArenaAllocator::new(1 * MB),
             vars: Vec::new(),
             defs: Vec::new(),
             cur_func_ret_type: Type::Null,
-        }; 
+        } 
     }
     pub fn error(&self, error_type: ParseErrorType) -> ParseError {
         let line_num = match self.peek(0) {
             Some(token) => token.line_num,
             None => self.peek(-1).unwrap().line_num,
         };
-        return ParseError {type_: error_type, line_num};
+        ParseError {type_: error_type, line_num}
     }
     pub fn parse_prog(&mut self) -> Result<Prog> {
         while self.peek(0).is_some() {
@@ -141,7 +142,7 @@ impl Parser {
             self.defs.push(def);
         }
         let prog = Prog {defs: self.defs.clone()};
-        return Ok(prog);
+        Ok(prog)
     }
     fn parse_def(&mut self) -> Result<ArenaPtr<Def>> {
         self.try_consume(&TokenType::Func)?;
@@ -190,7 +191,7 @@ impl Parser {
         self.cur_func_ret_type = return_type.clone();
         let scope = self.parse_scope()?;
         let def = self.allocator.alloc(Def::Func(func_ident, params, return_type, scope));
-        return Ok(def);
+        Ok(def)
     }
     fn parse_stmt(&mut self) -> Result<ArenaPtr<Stmt>> {
         if self.peek(0).is_some() {
@@ -199,7 +200,7 @@ impl Parser {
                 let stmt = self.parse_inbuilt(&inbuilt_type)?;
                 return Ok(stmt); 
             } 
-            return match self.peek(0).unwrap().type_ {
+            match self.peek(0).unwrap().type_ {
                 TokenType::Let => {
                     self.consume();
                     let mut var_data = VarData::new();
@@ -231,7 +232,7 @@ impl Parser {
                         return Err(self.error(ParseErrorType::Expected("variable type".to_string())));
                     }
                     self.try_consume(&TokenType::Eq)?;
-                    let expr = self.parse_expr(&var_data.type_, 0)?;
+                    let expr = self.parse_expr(Some(&var_data.type_), 0)?;
                     self.vars.push(var_data.clone());
                     let stmt = self.allocator.alloc(Stmt::Let(var_data, expr));
                     self.try_consume(&TokenType::SemiColon)?;
@@ -252,17 +253,18 @@ impl Parser {
                         if !var.mutable {
                             return Err(self.error(ParseErrorType::CannotMutateImmutableVar(ident.clone())));
                         }
-                        let expr = self.parse_expr(&var.type_, 0)?;
+                        let expr = self.parse_expr(Some(&var.type_), 0)?;
                         let stmt = self.allocator.alloc(Stmt::Assign(ident.clone(), expr));
                         self.try_consume(&TokenType::SemiColon)?;
                         return Ok(stmt);
-                    } else if self.peek(1).unwrap().type_ == TokenType::OpenParen {
-                        let expr = self.parse_expr(&Type::Null, 0)?;
+                    } 
+                    if self.peek(1).unwrap().type_ == TokenType::OpenParen {
+                        let expr = self.parse_expr(Some(&Type::Null), 0)?;
                         let stmt = self.allocator.alloc(Stmt::VoidFuncCall(expr));
                         self.try_consume(&TokenType::SemiColon)?;
                         return Ok(stmt);
                     } 
-                    return Err(self.error(ParseErrorType::Expected("var declaration or void func call".to_string())));
+                    Err(self.error(ParseErrorType::Expected("var declaration or void func call".to_string())))
                 }
                 TokenType::OpenCurly => {
                     let scope = self.parse_scope()?;
@@ -271,7 +273,7 @@ impl Parser {
                 }
                 TokenType::If => {
                     self.consume();
-                    let expr = self.parse_expr(&Type::Int, 0)?;
+                    let expr = self.parse_expr(Some(&Type::Int), 0)?;
                     let scope = self.parse_scope()?;
                     let pred = self.parse_if_pred()?;
                     let stmt = self.allocator.alloc(Stmt::If(expr, scope, pred));
@@ -282,35 +284,62 @@ impl Parser {
                     if self.cur_func_ret_type.is_null() {
                         return Err(self.error(ParseErrorType::CannotReturnInVoidFunc));
                     }
-                    let expr = self.parse_expr(&self.cur_func_ret_type.clone(), 0)?;
+                    let expr = self.parse_expr(Some(&self.cur_func_ret_type.clone()), 0)?;
                     self.try_consume(&TokenType::SemiColon)?;
                     let stmt = self.allocator.alloc(Stmt::Return(expr));
+                    Ok(stmt)
+                }
+                TokenType::For => {
+                    self.consume();
+                    let idx_ident;
+                    if self.peek(0).is_some() {
+                        if let TokenType::Ident(ref ident) = self.consume() {
+                            idx_ident = ident.clone();
+                        } else {
+                            return Err(self.error(ParseErrorType::Expected("index identifier".to_string())));
+                        };
+                    } else {
+                        return Err(self.error(ParseErrorType::Expected("index identifier".to_string())));
+                    }
+                    
+                    self.vars.push(VarData {
+                        ident: idx_ident.clone(),
+                        type_: Type::Int,
+                        mutable: false,
+                    });
+
+                    self.try_consume(&TokenType::In)?;
+                    let start = self.parse_expr(Some(&Type::Int), 0)?;
+                    self.try_consume(&TokenType::Arrow)?;
+                    let end = self.parse_expr(Some(&Type::Int), 0)?;
+                    let scope = self.parse_scope()?;
+                    let stmt = self.allocator.alloc(Stmt::For(idx_ident, start, end, scope));
                     Ok(stmt)
                 }
                 _ => Err(self.error(ParseErrorType::Expected("statement".to_string())))
             }
         } else {
-            return Err(self.error(ParseErrorType::Expected("statement".to_string())));
+            Err(self.error(ParseErrorType::Expected("statement".to_string())))
         }
     }
     fn parse_inbuilt(&mut self, inbuilt_type: &TokenType) -> Result<ArenaPtr<Stmt>> {
-        return match inbuilt_type {
+        match inbuilt_type {
             TokenType::Exit => {
                 self.try_consume(&TokenType::OpenParen)?;
-                let expr = self.parse_expr(&Type::Int, 0)?;
+                let expr = self.parse_expr(Some(&Type::Int), 0)?;
                 let inbuilt = self.allocator.alloc(InBuilt::Exit(expr));
                 let stmt = self.allocator.alloc(Stmt::InBuilt(inbuilt));
                 self.try_consume(&TokenType::CloseParen)?;
                 self.try_consume(&TokenType::SemiColon)?;
                 Ok(stmt)
             }
-            TokenType::Print => {
+            TokenType::Printf => {
                 self.try_consume(&TokenType::OpenParen)?;
-                let expr = self.parse_expr(&Type::Str, 0)?;
-                let inbuilt = self.allocator.alloc(InBuilt::Print(expr));
-                let stmt = self.allocator.alloc(Stmt::InBuilt(inbuilt));
+                let fmt_str = self.parse_expr(Some(&Type::Str), 0)?;
                 self.try_consume(&TokenType::CloseParen)?;
                 self.try_consume(&TokenType::SemiColon)?;
+                let inbuilt = self.allocator.alloc(InBuilt::Printf(fmt_str));
+                let stmt = self.allocator.alloc(Stmt::InBuilt(inbuilt));
                 Ok(stmt)
             }
             _ => Err(self.error(ParseErrorType::Expected("inbuilt function".to_string())))
@@ -319,7 +348,7 @@ impl Parser {
     fn parse_if_pred(&mut self) -> Result<Option<ArenaPtr<IfPred>>> {
         if self.try_consume(&TokenType::Else).is_ok() {
             if self.try_consume(&TokenType::If).is_ok() {
-                let expr = self.parse_expr(&Type::Int, 0)?;
+                let expr = self.parse_expr(Some(&Type::Int), 0)?;
                 let scope = self.parse_scope()?;
                 let pred = self.parse_if_pred()?;
                 let elseif = self.allocator.alloc(IfPred::ElseIf(expr, scope, pred));
@@ -328,9 +357,8 @@ impl Parser {
             let scope = self.parse_scope()?;
             let else_ = self.allocator.alloc(IfPred::Else(scope));
             return Ok(Some(else_));
-        } else {
-            return Ok(None);
         }
+        Ok(None)
     }
     fn parse_scope(&mut self) -> Result<Scope> {
         self.try_consume(&TokenType::OpenCurly)?;
@@ -348,13 +376,13 @@ impl Parser {
             }
         }
     }
-    fn parse_expr(&mut self, expected_type: &Type, min_prec: u8) -> Result<ArenaPtr<Expr>> {
+    fn parse_expr(&mut self, expected_type: Option<&Type>, min_prec: u8) -> Result<ArenaPtr<Expr>> {
         let atom = self.parse_atom()?;
         if self.peek(0).is_none() {
             return Err(self.error(ParseErrorType::Expected("expression".to_string())));
         }
         if let Atom::StrLit(_) = *atom {
-            if expected_type != &Type::Str {
+            if expected_type != Some(&Type::Str) {
                 return Err(self.error(ParseErrorType::MismatchedTypes));
             }
             let expr = self.allocator.alloc(Expr::Atom(atom));
@@ -370,18 +398,18 @@ impl Parser {
                         return false;
                     };
                     param_types = param_data.iter().map(|x| x.type_.clone()).collect();
-                    return ident == func_ident;
+                    ident == func_ident
                 }) else {
                     return Err(self.error(ParseErrorType::UndeclaredFunc(func_ident.clone())));
                 };
                 let Def::Func(.., ref ret_type, _) = *func.clone(); 
-                if ret_type != expected_type {
+                if Some(ret_type) != expected_type {
                     return Err(self.error(ParseErrorType::MismatchedTypes));
                 }
                 let mut params = Vec::new();
                 let mut i = 0;
                 while self.peek(0).is_some() && self.peek(0).unwrap().type_ != TokenType::CloseParen {
-                    params.push(self.parse_expr(&param_types[i], 0)?);
+                    params.push(self.parse_expr(Some(&param_types[i]), 0)?);
                     if self.peek(0).is_some() && self.peek(0).unwrap().type_ == TokenType::CloseParen {
                         break;
                     }
@@ -416,13 +444,13 @@ impl Parser {
             let expr = self.allocator.alloc(Expr::BinExpr(lhs, operator.clone(), rhs));
             lhs = expr;
         }
-        return Ok(lhs);
+        Ok(lhs)
     }
     fn parse_atom(&mut self) -> Result<ArenaPtr<Atom>> {
         if self.peek(0).is_none() {
             return Err(self.error(ParseErrorType::Expected("atom".to_string())));
         }
-        return match self.consume() {
+        match self.consume() {
             TokenType::IntLit(int) => {
                 let atom = self.allocator.alloc(Atom::IntLit(int));
                 Ok(atom)
@@ -436,7 +464,7 @@ impl Parser {
                 Ok(atom)
             }
             TokenType::OpenParen => {
-                let expr = self.parse_expr(&Type::Int, 0)?;
+                let expr = self.parse_expr(Some(&Type::Int), 0)?;
                 self.try_consume(&TokenType::CloseParen)?;
                 let atom = self.allocator.alloc(Atom::Paren(expr));
                 Ok(atom)
@@ -446,14 +474,14 @@ impl Parser {
     }
     fn peek(&self, offset: i32) -> Option<Box<Token>> {
         let idx = self.idx as i32 + offset;
-        return match self.tokens.get(idx as usize) {
+        match self.tokens.get(idx as usize) {
             Some(token) => Some(Box::new(token.clone())),
             None => None,
         }
     }
     fn consume(&mut self) -> TokenType {
         self.idx += 1;
-        return self.tokens[self.idx - 1].type_.clone();
+        self.tokens[self.idx - 1].type_.clone()
     }
     fn try_consume(&mut self, token_type: &TokenType) -> Result<()> {
         if self.peek(0).is_some() && self.peek(0).unwrap().type_ == *token_type {
@@ -475,6 +503,6 @@ impl Parser {
                 _ => "n/a",
             }.to_string())));
         }
-        return Ok(());
+        Ok(())
     }
 }
