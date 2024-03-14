@@ -136,112 +136,132 @@ impl Generator {
     }
     fn gen_stmt(&mut self, stmt: ArenaPtr<Stmt>) -> Result {
         match *stmt {
-            Stmt::InBuilt(ref inbuilt) => {
-                self.gen_inbuilt(inbuilt.clone())?;
+            Stmt::InBuilt(ref func_call) => {
+                self.gen_inbuilt_stmt(func_call.clone())?;
             }
-            Stmt::Let(ref var_data, ref expr) => {
-                self.gen_expr(expr.clone())?;
-                self.vars.push(Var {
-                    ident: var_data.ident.clone(), 
-                    type_: var_data.type_.clone(),
-                    mutable: var_data.mutable,
-                    stack_loc: self.stack_sz - var_data.type_.size()
-                });
+            Stmt::Let(ref var_data, ref value) => {
+                self.gen_let_stmt(var_data.clone(), value.clone())?;
             }
-            Stmt::Assign(ref ident, ref expr) => {
-                let var = self.vars.iter().find(|x| x.ident == *ident).unwrap().clone();
-                self.gen_expr(expr.clone())?;
-                match var.type_ {
-                    Type::Int => {
-                        let offset = self.stack_sz - var.stack_loc - Type::Int.size();
-                        self.pop("rax");
-                        self.directive("mov", &format!("[rsp + {offset}]"), Some("rax"));
-                    }
-                    Type::Str => {
-                        let offset = self.stack_sz - var.stack_loc - Type::Int.size();
-                        self.pop("rbx");      // pop off 64 bit string length
-                        self.pop("rax");      // pop off 64 bit string address
-                        self.directive("mov", &format!("[rsp + {offset}]"), Some("rax"));
-                        self.directive("mov", &format!("[rsp + {offset}]"), Some("rbx"));
-                    }
-                    _ => return Err(GenerationError::NotImplemented)
-                }
+            Stmt::Assign(ref ident, ref value) => {
+                self.gen_assign_stmt(ident.clone(), value.clone())?;
             }
             Stmt::Scope(ref scope) => {
                 self.gen_scope(scope.to_vec(), true)?;
             }
             Stmt::For(ref idx_ident, ref start, ref end, ref scope) => {
-                self.gen_expr(start.clone())?;
-                let idx_loc = self.stack_sz - Type::Int.size();
-                self.vars.push(Var {
-                    ident: idx_ident.clone(),
-                    type_: Type::Int,
-                    mutable: false,
-                    stack_loc: idx_loc,
-                });
-                
-                self.gen_expr(end.clone())?;
-                let end_val_loc = self.stack_sz - Type::Int.size(); 
-
-                let label = self.create_label();
-                self.output += &format!("{label}:\n");
-
-                self.gen_scope(scope.to_vec(), true)?;
-
-                let idx_offset = self.stack_sz - idx_loc - Type::Int.size();
-                self.directive("inc", &format!("QWORD [rsp + {idx_offset}]"), NONE);
-                self.directive("mov", "rax", Some(&format!("[rsp + {idx_offset}]")));
-
-                let end_val_offset = self.stack_sz - end_val_loc - Type::Int.size();
-                self.directive("mov", "rbx", Some(&format!("[rsp + {end_val_offset}]")));
-
-                self.directive("cmp", "rax", Some("rbx"));
-                self.directive("jnz", &label, NONE);
+                self.gen_for_loop(idx_ident.clone(), start.clone(), end.clone(), scope.clone())?;
             }
-            Stmt::If(ref expr, ref scope, ref pred) => {
-                self.gen_expr(expr.clone())?;
-                self.pop("rax");
-                let label = self.create_label();
-                self.directive("test", "rax", Some("rax"));
-                self.directive("jz", &label, NONE);
-                self.gen_scope(scope.to_vec(), true)?;
-                if pred.is_some() {
-                    let end_label = self.create_label();
-                    self.directive("jmp", &end_label, NONE);
-                    self.output += &format!("{label}:\n");
-                    self.gen_if_pred(pred.clone().unwrap(), &end_label)?;
-                    self.output += &format!("{end_label}:\n");
-                } else {
-                    self.output += &format!("{label}:\n");
-                }
+            Stmt::If(ref condition, ref scope, ref if_pred) => {
+                self.gen_if_stmt(condition.clone(), scope.clone(), if_pred.clone())?;
             }
-            Stmt::Return(ref expr) => {
-                self.gen_expr(expr.clone())?;
-                let func = self.prog.defs.iter().find(|&f| {
-                    let Def::Func(ref ident, ..) = *f.clone() else {
-                        return false;
-                    };
-                    ident == &self.cur_func
-                }).unwrap();
-                let Def::Func(.., ref ret_type, _) = *func.clone();
-                match ret_type {
-                    &Type::Int => self.pop("rax"),
-                    &Type::Str => {
-                        self.pop("rbx");
-                        self.pop("rax");
-                    }
-                    _ => return Err(GenerationError::NotImplemented)
-                }
-                let ret_label = &format!("{}_ret", self.cur_func);
-                self.directive("jmp", ret_label, NONE);
+            Stmt::Return(ref value) => {
+                self.gen_ret_stmt(value.clone())?;
             }
-            Stmt::VoidFuncCall(ref expr) => {
-                self.gen_expr(expr.clone())?;   
+            Stmt::VoidFuncCall(ref func_call) => {
+                self.gen_expr(func_call.clone())?;   
             }
         }
         Ok(())
     }
-    fn gen_inbuilt(&mut self, func_call: ArenaPtr<InBuilt>) -> Result {
+    fn gen_let_stmt(&mut self, var_data: VarData, value: ArenaPtr<Expr>) -> Result {
+        self.gen_expr(value)?;
+        self.vars.push(Var {
+            ident: var_data.ident, 
+            type_: var_data.type_.clone(),
+            mutable: var_data.mutable,
+            stack_loc: self.stack_sz - var_data.type_.size()
+        });
+        Ok(())
+    }
+    fn gen_assign_stmt(&mut self, ident: String, value: ArenaPtr<Expr>) -> Result {
+        let var = self.vars.iter().find(|x| x.ident == *ident).unwrap().clone();
+        self.gen_expr(value)?;
+        match var.type_ {
+            Type::Int => {
+                let offset = self.stack_sz - var.stack_loc - Type::Int.size();
+                self.pop("rax");
+                self.directive("mov", &format!("[rsp + {offset}]"), Some("rax"));
+            }
+            Type::Str => {
+                let offset = self.stack_sz - var.stack_loc - Type::Int.size();
+                self.pop("rbx");      // pop off 64 bit string length
+                self.pop("rax");      // pop off 64 bit string address
+                self.directive("mov", &format!("[rsp + {offset}]"), Some("rax"));
+                self.directive("mov", &format!("[rsp + {offset}]"), Some("rbx"));
+            }
+            _ => return Err(GenerationError::NotImplemented)
+        }
+        Ok(())
+    }
+    fn gen_for_loop(&mut self, idx_ident: String, start: ArenaPtr<Expr>, end: ArenaPtr<Expr>, scope: Scope) -> Result {
+        self.gen_expr(start)?;
+        let idx_loc = self.stack_sz - Type::Int.size();
+        self.vars.push(Var {
+            ident: idx_ident,
+            type_: Type::Int,
+            mutable: false,
+            stack_loc: idx_loc,
+        });
+        
+        self.gen_expr(end)?;
+        let end_val_loc = self.stack_sz - Type::Int.size(); 
+
+        let label = self.create_label();
+        self.output += &format!("{label}:\n");
+
+        self.gen_scope(scope, true)?;
+
+        let idx_offset = self.stack_sz - idx_loc - Type::Int.size();
+        self.directive("inc", &format!("QWORD [rsp + {idx_offset}]"), NONE);
+        self.directive("mov", "rax", Some(&format!("[rsp + {idx_offset}]")));
+
+        let end_val_offset = self.stack_sz - end_val_loc - Type::Int.size();
+        self.directive("mov", "rbx", Some(&format!("[rsp + {end_val_offset}]")));
+
+        self.directive("cmp", "rax", Some("rbx"));
+        self.directive("jnz", &label, NONE);
+        Ok(())
+    }
+    fn gen_if_stmt(&mut self, condition: ArenaPtr<Expr>, scope: Scope, if_pred: Option<ArenaPtr<IfPred>>) -> Result {
+        self.gen_expr(condition)?;
+        self.pop("rax");
+        let label = self.create_label();
+        self.directive("test", "rax", Some("rax"));
+        self.directive("jz", &label, NONE);
+        self.gen_scope(scope, true)?;
+        if if_pred.is_some() {
+            let end_label = self.create_label();
+            self.directive("jmp", &end_label, NONE);
+            self.output += &format!("{label}:\n");
+            self.gen_if_pred(if_pred.unwrap(), &end_label)?;
+            self.output += &format!("{end_label}:\n");
+        } else {
+            self.output += &format!("{label}:\n");
+        }
+        Ok(())
+    }
+    fn gen_ret_stmt(&mut self, value: ArenaPtr<Expr>) -> Result {
+        self.gen_expr(value)?;
+        let func = self.prog.defs.iter().find(|&f| {
+            let Def::Func(ref ident, ..) = *f.clone() else {
+                return false;
+            };
+            ident == &self.cur_func
+        }).unwrap();
+        let Def::Func(.., ref ret_type, _) = *func.clone();
+        match ret_type {
+            &Type::Int => self.pop("rax"),
+            &Type::Str => {
+                self.pop("rbx");
+                self.pop("rax");
+            }
+            _ => return Err(GenerationError::NotImplemented)
+        }
+        let ret_label = &format!("{}_ret", self.cur_func);
+        self.directive("jmp", ret_label, NONE);
+        Ok(()) 
+    }
+    fn gen_inbuilt_stmt(&mut self, func_call: ArenaPtr<InBuilt>) -> Result {
         match *func_call {
             InBuilt::Exit(ref expr) => {   
                 self.gen_expr(expr.clone())?;
@@ -293,68 +313,78 @@ impl Generator {
     }
     fn gen_expr(&mut self, expr: ArenaPtr<Expr>) -> Result {
         match *expr {
-            Expr::Atom(ref atom) => self.gen_atom(atom.clone())?,
+            Expr::Atom(ref atom) => {
+                self.gen_atom(atom.clone())?
+            }
             Expr::BinExpr(ref lhs, ref operator, ref rhs) => {
-                match operator {
-                    Op::Plus => {
-                         self.gen_expr(lhs.clone())?;
-                         self.gen_expr(rhs.clone())?;
-                         self.pop("rbx");
-                         self.pop("rax");
-                         self.directive("add", "rax", Some("rbx"));
-                         self.push("rax");
-                    },
-                    Op::Minus => {
-                        self.gen_expr(lhs.clone())?;
-                        self.gen_expr(rhs.clone())?;
-                        self.pop("rbx");
-                        self.pop("rax");
-                        self.directive("sub", "rax", Some("rbx"));
-                        self.push("rax");
-                    }
-                    Op::Star => {
-                        self.gen_expr(lhs.clone())?;
-                        self.gen_expr(rhs.clone())?;
-                        self.pop("rbx");
-                        self.pop("rax");
-                        self.directive("mul", "rbx", NONE);
-                        self.push("rax");
-                    },
-                    Op::Slash => {
-                        self.gen_expr(lhs.clone())?;
-                        self.gen_expr(rhs.clone())?;
-                        self.pop("rbx");
-                        self.pop("rax");
-                        self.directive("div", "rbx", NONE);
-                    }
-                } 
+                self.gen_bin_expr(lhs.clone(), operator, rhs.clone())?;
             }
             Expr::FuncCall(ref func_ident, ref params) => {
-                for param in params.iter().rev() {
-                    self.gen_expr(param.clone())?;
-                }
-                let Def::Func(_, ref param_data, ref ret_type, _) = *self.prog.defs.iter().find(|&f| {
-                    let Def::Func(ref ident, ..) = *f.clone() else {
-                        return false;
-                    };
-                    ident == func_ident
-                }).unwrap().clone();
-                let params_size: usize = param_data.iter().map(|x| x.type_.size()).sum();
-                self.directive("call", func_ident, NONE);
-                self.directive("add", "rsp", Some(params_size));
-                self.stack_sz -= params_size;
-                if !ret_type.is_null() {
-                    match ret_type {
-                        Type::Int => self.push("rax"),
-                        Type::Str => {
-                            self.push("rax");
-                            self.push("rbx");
-                        }
-                        _ => return Err(GenerationError::NotImplemented)
-                    }
-                }
+                self.gen_func_call_expr(func_ident, params.clone())?;
             }
         }    
+        Ok(())
+    }
+    fn gen_bin_expr(&mut self, lhs: ArenaPtr<Expr>, operator: &Op, rhs: ArenaPtr<Expr>) -> Result {
+        match operator {
+            Op::Plus => {
+                 self.gen_expr(lhs)?;
+                 self.gen_expr(rhs)?;
+                 self.pop("rbx");
+                 self.pop("rax");
+                 self.directive("add", "rax", Some("rbx"));
+                 self.push("rax");
+            }
+            Op::Minus => {
+                self.gen_expr(lhs)?;
+                self.gen_expr(rhs)?;
+                self.pop("rbx");
+                self.pop("rax");
+                self.directive("sub", "rax", Some("rbx"));
+                self.push("rax");
+            }
+            Op::Star => {
+                self.gen_expr(lhs)?;
+                self.gen_expr(rhs)?;
+                self.pop("rbx");
+                self.pop("rax");
+                self.directive("mul", "rbx", NONE);
+                self.push("rax");
+            }
+            Op::Slash => {
+                self.gen_expr(lhs)?;
+                self.gen_expr(rhs)?;
+                self.pop("rbx");
+                self.pop("rax");
+                self.directive("div", "rbx", NONE);
+            }
+        } 
+        Ok(())
+    }
+    fn gen_func_call_expr(&mut self, func_ident: &String, params: Vec<ArenaPtr<Expr>>) -> Result {
+        for param in params.into_iter().rev() {
+            self.gen_expr(param)?;
+        }
+        let Def::Func(_, ref param_data, ref ret_type, _) = *self.prog.defs.iter().find(|&f| {
+            let Def::Func(ref ident, ..) = *f.clone() else {
+                return false;
+            };
+            ident == func_ident
+        }).unwrap().clone();
+        let params_size: usize = param_data.iter().map(|x| x.type_.size()).sum();
+        self.directive("call", func_ident, NONE);
+        self.directive("add", "rsp", Some(params_size));
+        self.stack_sz -= params_size;
+        if !ret_type.is_null() {
+            match ret_type {
+                Type::Int => self.push("rax"),
+                Type::Str => {
+                    self.push("rax");
+                    self.push("rbx");
+                }
+                _ => return Err(GenerationError::NotImplemented)
+            }
+        }
         Ok(())
     }
     fn gen_atom(&mut self, atom: ArenaPtr<Atom>) -> Result {
