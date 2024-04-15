@@ -50,8 +50,8 @@ pub struct Generator {
     cur_func: String,
 }
 impl Generator {
-    pub fn new(prog: Prog) -> Generator {
-        Generator {
+    pub fn new(prog: Prog) -> Self {
+        Self {
             prog, 
             output: String::new(),
             section_data: String::new(),

@@ -2,6 +2,7 @@ mod tokenizer;
 mod parser;
 mod generation;
 mod arena;
+mod heap;
 
 use crate::tokenizer::*;
 use crate::parser::*;

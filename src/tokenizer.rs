@@ -61,8 +61,8 @@ impl fmt::Debug for Token {
     }
 }
 impl Token {
-    pub fn new(token_type: TokenType, line_num: u32) -> Token {
-        Token {type_: token_type, line_num}
+    pub fn new(token_type: TokenType, line_num: u32) -> Self {
+        Self {type_: token_type, line_num}
     }
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -85,8 +85,8 @@ pub struct Tokenizer {
     line_cnt: u32,
 }
 impl Tokenizer {
-    pub fn new(src: String) -> Tokenizer {
-        Tokenizer {src, idx: 0, line_cnt: 1 }
+    pub fn new(src: String) -> Self {
+        Self {src, idx: 0, line_cnt: 1 }
     }
     pub fn tokenize(&mut self) -> Result<Vec<Token>, TokenizationError> {
         let mut tokens: Vec<Token> = Vec::new();

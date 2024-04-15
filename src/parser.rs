@@ -52,8 +52,8 @@ pub struct VarData {
     pub mutable: bool,
 }
 impl VarData {
-    pub fn new() -> VarData {
-        VarData {
+    pub fn new() -> Self {
+        Self {
             ident: String::new(),
             type_: Type::Int,
             mutable: false,
@@ -119,8 +119,8 @@ pub struct Parser {
     cur_func_ret_type: Type,
 }
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Parser {
-        Parser {
+    pub fn new(tokens: Vec<Token>) -> Self {
+        Self {
             tokens, 
             idx: 0,
             allocator: ArenaAllocator::new(1 * MB),
