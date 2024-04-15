@@ -30,6 +30,10 @@ fn check_args() -> String {
     process::exit(-1);
 }
 fn compile(build_dir: &str) {
+    // clean build directory
+    let _ = Command::new("rm -rf").arg(build_dir).output();
+    Command::new("mkdir").arg(build_dir).output().unwrap();
+
     let input_file = fs::read_to_string(format!("main.nk")).unwrap();
 
     let mut tokenizer = Tokenizer::new(input_file);
