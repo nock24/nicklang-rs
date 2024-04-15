@@ -1,5 +1,6 @@
+fn hello_world() -> str {
+    return "hello world\n";
+}
 fn main() {
-    for i in 0->10 {
-        printf("hello\n");
-    }
+    printf(hello_world());
 }

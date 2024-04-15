@@ -92,9 +92,9 @@ impl Tokenizer {
         let mut tokens: Vec<Token> = Vec::new();
         let mut buf = String::new();
         while self.peek(0).is_some() {
-            if self.peek(0).unwrap().is_alphabetic() {
+            if self.peek(0).unwrap().is_alphabetic() || self.peek(0).unwrap() == '_' {
                 buf.push(self.consume());
-                while self.peek(0).is_some() && self.peek(0).unwrap().is_alphabetic() {
+                while self.peek(0).is_some() && (self.peek(0).unwrap().is_alphabetic() || self.peek(0).unwrap() == '_') {
                     buf.push(self.consume());
                 }
                 tokens.push(Token::new(match buf.as_str() {
