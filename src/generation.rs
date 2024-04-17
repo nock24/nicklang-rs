@@ -82,7 +82,7 @@ impl Generator {
         self.output += "    syscall\n";
 
         for def in self.prog.defs.clone() {
-            let Def::Func(ref func_ident, ..) = *def;
+            let Def::Func(ref func_ident, ..) = *def else { todo!() };
             if func_ident != "main" {
                 self.cur_func = func_ident.clone();
                 self.gen_def(def)?;
@@ -131,6 +131,7 @@ impl Generator {
                     self.output += "    ret\n";
                 }
             }
+            Def::Struct(..) => todo!()
         }
         Ok(())
     }
@@ -248,7 +249,7 @@ impl Generator {
             };
             ident == &self.cur_func
         }).unwrap();
-        let Def::Func(.., ref ret_type, _) = *func.clone();
+        let Def::Func(.., ref ret_type, _) = *func.clone() else { todo!() };
         match ret_type {
             &Type::Int => self.pop("rax"),
             &Type::Str => {
@@ -370,7 +371,7 @@ impl Generator {
                 return false;
             };
             ident == func_ident
-        }).unwrap().clone();
+        }).unwrap().clone() else { todo!() };
         let params_size: usize = param_data.iter().map(|x| x.type_.size()).sum();
         self.directive("call", func_ident, NONE);
         self.directive("add", "rsp", Some(params_size));

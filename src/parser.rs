@@ -75,6 +75,7 @@ pub struct Prog {
 #[derive(Debug, Clone)]
 pub enum Def {
     Func(String, Vec<VarData>, Type, Scope),
+    Struct(String, Vec<VarData>),
 }
 #[derive(Debug, Clone)]
 pub enum Stmt {
@@ -136,6 +137,9 @@ impl Parser {
         };
         ParseError {type_: error_type, line_num}
     }
+    pub fn expected(&self, str: &str) -> ParseError {
+        self.error(ParseErrorType::Expected(str.to_string()))
+    }
     pub fn parse_prog(&mut self) -> Result<Prog> {
         while self.peek(0).is_some() {
             let def = self.parse_def()?;
@@ -145,16 +149,64 @@ impl Parser {
         Ok(prog)
     }
     fn parse_def(&mut self) -> Result<ArenaPtr<Def>> {
-        self.try_consume(&TokenType::Func)?;
-        let func_ident;
-        if self.peek(0).is_some() {
-            func_ident = match self.consume() {
-                TokenType::Ident(ident) => ident.to_string(),
-                _ => return Err(self.error(ParseErrorType::Expected("identfier".to_string()))),
-            };
-        } else {
-            return Err(self.error(ParseErrorType::Expected("identfier".to_string())));
+        if self.peek(0).is_none() {
+            return Err(self.expected("struct or function definition"));
         }
+        match self.consume() {
+            TokenType::Func => {
+                self.parse_func()   
+            }
+            TokenType::Struct => {
+                self.parse_struct()
+            }
+            _ => Err(self.expected("struct of function defintion"))
+        }
+    }
+    fn parse_struct(&mut self) -> Result<ArenaPtr<Def>> {
+        let struct_ident;
+        if self.peek(0).is_none() {
+            return Err(self.expected("identifier"));
+        }
+        struct_ident = match self.consume() {
+            TokenType::Ident(ident) => ident.to_string(),
+            _ => return Err(self.expected("identifer"))
+        };
+        self.try_consume(&TokenType::OpenCurly)?;
+        let mut members = Vec::new();
+        while self.peek(0).is_some() && self.peek(0).unwrap().type_ != TokenType::CloseCurly {
+            let mut member_data = VarData::new();
+            member_data.mutable = false;
+            member_data.ident = match self.consume() {
+                TokenType::Ident(ident) => ident.to_string(),
+                _ => return Err(self.expected("member"))
+            };
+            self.try_consume(&TokenType::Colon)?;
+            if self.peek(0).is_none() {
+                return Err(self.expected("member type"));
+            }
+            member_data.type_ = match self.consume() {
+                TokenType::Type(type_) => type_,
+                _ => return Err(self.expected("member type"))
+            };
+            members.push(member_data);
+            if self.peek(0).is_some() && self.peek(0).unwrap().type_ == TokenType::CloseCurly {
+                break;
+            }
+            self.try_consume(&TokenType::Comma)?;
+        }
+        self.consume();
+        let def = self.allocator.alloc(Def::Struct(struct_ident, members));
+        Ok(def)
+    }
+    fn parse_func(&mut self) -> Result<ArenaPtr<Def>> {
+        let func_ident;
+        if self.peek(0).is_none() {
+            return Err(self.expected("identfier"));
+        }
+        func_ident = match self.consume() {
+            TokenType::Ident(ident) => ident.to_string(),
+            _ => return Err(self.expected("identfier")),
+        };
         self.try_consume(&TokenType::OpenParen)?;
         let mut params = Vec::new();
         while self.peek(0).is_some() && self.peek(0).unwrap().type_ != TokenType::CloseParen {
@@ -162,17 +214,16 @@ impl Parser {
             param_data.mutable = true;
             param_data.ident = match self.consume() {
                 TokenType::Ident(ident) => ident.to_string(),
-                _ => return Err(self.error(ParseErrorType::Expected("paramater".to_string())))
+                _ => return Err(self.expected("paramater"))
             };
             self.try_consume(&TokenType::Colon)?;
-            if self.peek(0).is_some() {
-                param_data.type_ = match self.consume() {
-                    TokenType::Type(type_) => type_,
-                    _ => return Err(self.error(ParseErrorType::Expected("variable type".to_string())))
-                }
-            } else {
-                return Err(self.error(ParseErrorType::Expected("variable type".to_string())));
+            if self.peek(0).is_none() {
+                return Err(self.expected("variable type"));
             }
+            param_data.type_ = match self.consume() {
+                TokenType::Type(type_) => type_,
+                _ => return Err(self.expected("variable type"))
+            };
             params.push(param_data);
             if self.peek(0).is_some() && self.peek(0).unwrap().type_ == TokenType::CloseParen {
                 break;
@@ -184,7 +235,7 @@ impl Parser {
         if self.try_consume(&TokenType::Arrow).is_ok() {
             return_type = match self.consume() {
                 TokenType::Type(type_) => type_,
-                _ => return Err(self.error(ParseErrorType::Expected("return type".to_string())))
+                _ => return Err(self.expected("return type"))
             };
         }
         self.vars.extend(params.clone());
@@ -209,15 +260,15 @@ impl Parser {
                             self.consume();
                             var_data.mutable = true;
                             if self.peek(0).is_none() {
-                                return Err(self.error(ParseErrorType::Expected("identifier".to_string())));
+                                return Err(self.expected("identifier"));
                             }
                         }
                         var_data.ident = match self.consume() {
                             TokenType::Ident(ident) => ident.to_string(),
-                            _ => return Err(self.error(ParseErrorType::Expected("identifier".to_string()))),
+                            _ => return Err(self.expected("identifier")),
                         };
                     } else {
-                        return Err(self.error(ParseErrorType::Expected("identifier".to_string())));
+                        return Err(self.expected("identifier"));
                     }
                     if self.vars.iter().find(|x| x.ident == var_data.ident).is_some() {
                         return Err(self.error(ParseErrorType::IdentAlreadyUsed(var_data.ident.clone())));
@@ -226,10 +277,10 @@ impl Parser {
                     if self.peek(0).is_some() {
                         var_data.type_ = match self.consume() {
                             TokenType::Type(type_) => type_,
-                            _ => return Err(self.error(ParseErrorType::Expected("variable type".to_string()))),
+                            _ => return Err(self.expected("variable type")),
                         }
                     } else {
-                        return Err(self.error(ParseErrorType::Expected("variable type".to_string())));
+                        return Err(self.expected("variable type"));
                     }
                     self.try_consume(&TokenType::Eq)?;
                     let expr = self.parse_expr(Some(&var_data.type_), 0)?;
@@ -240,7 +291,7 @@ impl Parser {
                 }
                 TokenType::Ident(ident) => {
                     if self.peek(1).is_none() {
-                        return Err(self.error(ParseErrorType::Expected("var declaration or void func call".to_string())));
+                        return Err(self.expected("var declaration or void func call"));
                     }
                     if self.peek(1).unwrap().type_ == TokenType::Eq {
                         self.consume();
@@ -264,7 +315,7 @@ impl Parser {
                         self.try_consume(&TokenType::SemiColon)?;
                         return Ok(stmt);
                     } 
-                    Err(self.error(ParseErrorType::Expected("var declaration or void func call".to_string())))
+                    Err(self.expected("var declaration or void func call"))
                 }
                 TokenType::OpenCurly => {
                     let scope = self.parse_scope()?;
@@ -292,15 +343,14 @@ impl Parser {
                 TokenType::For => {
                     self.consume();
                     let idx_ident;
-                    if self.peek(0).is_some() {
-                        if let TokenType::Ident(ref ident) = self.consume() {
-                            idx_ident = ident.clone();
-                        } else {
-                            return Err(self.error(ParseErrorType::Expected("index identifier".to_string())));
-                        };
-                    } else {
-                        return Err(self.error(ParseErrorType::Expected("index identifier".to_string())));
+                    if self.peek(0).is_none() {
+                        return Err(self.expected("index identifier"));
                     }
+                    if let TokenType::Ident(ref ident) = self.consume() {
+                        idx_ident = ident.clone();
+                    } else {
+                        return Err(self.expected("index identifier"));
+                    };
                     
                     self.vars.push(VarData {
                         ident: idx_ident.clone(),
@@ -316,10 +366,10 @@ impl Parser {
                     let stmt = self.allocator.alloc(Stmt::For(idx_ident, start, end, scope));
                     Ok(stmt)
                 }
-                _ => Err(self.error(ParseErrorType::Expected("statement".to_string())))
+                _ => Err(self.expected("statement"))
             }
         } else {
-            Err(self.error(ParseErrorType::Expected("statement".to_string())))
+            Err(self.expected("statement"))
         }
     }
     fn parse_inbuilt(&mut self, inbuilt_type: &TokenType) -> Result<ArenaPtr<Stmt>> {
@@ -342,7 +392,7 @@ impl Parser {
                 let stmt = self.allocator.alloc(Stmt::InBuilt(inbuilt));
                 Ok(stmt)
             }
-            _ => Err(self.error(ParseErrorType::Expected("inbuilt function".to_string())))
+            _ => Err(self.expected("inbuilt function"))
         }
     }
     fn parse_if_pred(&mut self) -> Result<Option<ArenaPtr<IfPred>>> {
@@ -379,7 +429,7 @@ impl Parser {
     fn parse_expr(&mut self, expected_type: Option<&Type>, min_prec: u8) -> Result<ArenaPtr<Expr>> {
         let atom = self.parse_atom()?;
         if self.peek(0).is_none() {
-            return Err(self.error(ParseErrorType::Expected("expression".to_string())));
+            return Err(self.expected("expression"));
         }
         if let Atom::StrLit(_) = *atom {
             if expected_type != Some(&Type::Str) {
@@ -402,7 +452,7 @@ impl Parser {
                 }) else {
                     return Err(self.error(ParseErrorType::UndeclaredFunc(func_ident.clone())));
                 };
-                let Def::Func(.., ref ret_type, _) = *func.clone(); 
+                let Def::Func(.., ref ret_type, _) = *func.clone() else { todo!() };
                 if Some(ret_type) != expected_type {
                     return Err(self.error(ParseErrorType::MismatchedTypes));
                 }
@@ -422,7 +472,7 @@ impl Parser {
                     return Ok(lhs);
                 }
             } else {
-                return Err(self.error(ParseErrorType::Expected("identifier".to_string())));
+                return Err(self.expected("identifier"));
             }
         } else {
             lhs = self.allocator.alloc(Expr::Atom(atom));
@@ -448,7 +498,7 @@ impl Parser {
     }
     fn parse_atom(&mut self) -> Result<ArenaPtr<Atom>> {
         if self.peek(0).is_none() {
-            return Err(self.error(ParseErrorType::Expected("atom".to_string())));
+            return Err(self.expected("atom"));
         }
         match self.consume() {
             TokenType::IntLit(int) => {
@@ -469,7 +519,7 @@ impl Parser {
                 let atom = self.allocator.alloc(Atom::Paren(expr));
                 Ok(atom)
             }
-            _ => Err(self.error(ParseErrorType::Expected("atom".to_string())))
+            _ => Err(self.expected("atom"))
         } 
     }
     fn peek(&self, offset: i32) -> Option<Box<Token>> {
@@ -487,7 +537,7 @@ impl Parser {
         if self.peek(0).is_some() && self.peek(0).unwrap().type_ == *token_type {
             self.consume();
         } else {
-            return Err(self.error(ParseErrorType::Expected(match *token_type {
+            return Err(self.expected(match *token_type {
                 TokenType::SemiColon => ";",
                 TokenType::Eq => "=",
                 TokenType::OpenParen => "(",
@@ -501,7 +551,7 @@ impl Parser {
                 TokenType::Type(_) => "type",
                 TokenType::Colon => ":",
                 _ => "n/a",
-            }.to_string())));
+            }));
         }
         Ok(())
     }

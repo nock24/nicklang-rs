@@ -68,7 +68,7 @@ impl<'a> Heap<'a> {
         Ok(())
     }
 
-    pub fn free(&mut self, addr: usize, size: usize) {
+    pub fn free(&mut self, addr: usize, _size: usize) {
         let idx = self.chunks.iter().position(|c| c.offset == addr).unwrap();
         self.chunks[idx].free = true;
 

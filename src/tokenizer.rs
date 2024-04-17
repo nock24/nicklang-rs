@@ -20,6 +20,7 @@ pub enum TokenType {
 
     // definition keywords
     Func,
+    Struct,
 
     // control flow
     If,             
@@ -99,6 +100,7 @@ impl Tokenizer {
                 }
                 tokens.push(Token::new(match buf.as_str() {
                     "fn" => TokenType::Func,
+                    "struct" => TokenType::Struct,
                     "exit" => TokenType::Exit,
                     "let" => TokenType::Let,
                     "if" => TokenType::If,
