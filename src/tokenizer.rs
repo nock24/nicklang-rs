@@ -1,4 +1,5 @@
 use std::fmt;
+use crate::arena::*;
 
 #[derive(Debug)]
 pub enum TokenizationError {
@@ -72,12 +73,13 @@ pub enum Op {
     Minus,
     Star,
     Slash,
+    At,
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type { 
     Int,
     Str,
-    Ptr,
+    Ptr(ArenaPtr<Type>),
     Null,
 }
 pub struct Tokenizer {
@@ -174,6 +176,7 @@ impl Tokenizer {
                     }
                     '*' => TokenType::Op(Op::Star),
                     '/' => TokenType::Op(Op::Slash),
+                    '@' => TokenType::Op(Op::At),
 
                     '(' => TokenType::OpenParen,
                     ')' => TokenType::CloseParen,

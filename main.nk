@@ -1,6 +1,2 @@
-fn hello_world() -> str {
-    return "hello world\n";
-}
 fn main() {
-    printf(hello_world());
 }

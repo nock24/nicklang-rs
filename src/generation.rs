@@ -25,7 +25,7 @@ impl Type {
         match self {
             &Type::Int => 8,    // 64 bit integer
             &Type::Str => 16,   // 64 bit pointer and 64 bit length
-            &Type::Ptr => 8,    // 64 bit address
+            &Type::Ptr(..) => 8,    // 64 bit address
             &Type::Null => 0,
         }
     }
@@ -38,6 +38,7 @@ struct Var {
     mutable: bool,
     stack_loc: usize,
 }
+
 pub struct Generator {
     prog: Prog,
     pub output: String,
@@ -48,7 +49,9 @@ pub struct Generator {
     label_cnt: u64,
     str_cnt: u64,
     cur_func: String,
+    structs: Vec<(String, Vec<VarData>)>
 }
+
 impl Generator {
     pub fn new(prog: Prog) -> Self {
         Self {
@@ -61,6 +64,7 @@ impl Generator {
             label_cnt: 0,
             str_cnt: 0,
             cur_func: "main".to_string(),
+            structs: Vec::new()
         }
     }
     pub fn gen_prog(&mut self) -> Result {
@@ -82,11 +86,16 @@ impl Generator {
         self.output += "    syscall\n";
 
         for def in self.prog.defs.clone() {
-            let Def::Func(ref func_ident, ..) = *def else { todo!() };
-            if func_ident != "main" {
-                self.cur_func = func_ident.clone();
-                self.gen_def(def)?;
-            } 
+            match *def {
+                Def::Func(ref func_ident, ..) => {
+                    if func_ident != "main" {
+                        self.gen_def(def)?;
+                    }
+                }
+                Def::Struct(..) => {
+                    self.gen_def(def)?;
+                }
+            }
         }
         self.output = self.section_data.clone() + &self.output;
         Ok(())
@@ -95,6 +104,7 @@ impl Generator {
         match *def {
             Def::Func(ref func_ident, ref params, ref _return_type, ref scope) => {
                 if func_ident != "main" {
+                    self.cur_func = func_ident.to_string();
                     self.stack_sz += RET_ADDR_SZ;
                 }
                 self.output += &format!("{func_ident}:\n");
@@ -105,8 +115,8 @@ impl Generator {
                             self.push(&format!("QWORD [rsp + {offset}]"));         // push 64 bit integer
                         }
                         Type::Str => {
-                            self.push(&format!("QWORD [rsp + {}]", offset + Type::Ptr.size()));         // push 64 bit string address
-                            self.push(&format!("QWORD [rsp + {}]", offset + Type::Ptr.size()));         // push 64 bit string length
+                            self.push(&format!("QWORD [rsp + {}]", offset + Type::Ptr(..).size()));         // push 64 bit string address
+                            self.push(&format!("QWORD [rsp + {}]", offset + Type::Ptr(..).size()));         // push 64 bit string length
                         }
                         _ => return Err(GenerationError::NotImplemented)
                     }
@@ -131,7 +141,10 @@ impl Generator {
                     self.output += "    ret\n";
                 }
             }
-            Def::Struct(..) => todo!()
+            Def::Struct(ref struct_ident, ref members) => {
+                self.structs.push((struct_ident.clone(), members.clone()));
+                return Err(GenerationError::NotImplemented);
+            }
         }
         Ok(())
     }

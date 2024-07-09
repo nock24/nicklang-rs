@@ -45,6 +45,14 @@ impl Type {
         }
     }
 }
+impl Op {
+    pub fn is_bin_op(&self) -> bool {
+        match self {
+            Op::Plus | Op::Minus | Op::Star | Op::Slash => true,
+            _ => false
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub struct VarData {
     pub ident: String,
@@ -110,6 +118,7 @@ pub enum Atom {
     StrLit(String),
     Ident(String),
     Paren(ArenaPtr<Expr>),
+    Addr(String),
 }
 pub struct Parser {
     tokens: Vec<Token>,
@@ -139,6 +148,13 @@ impl Parser {
     }
     pub fn expected(&self, str: &str) -> ParseError {
         self.error(ParseErrorType::Expected(str.to_string()))
+    }
+    pub fn find_var(&self, ident: &String) -> Option<VarData> {
+        if let Some(var) = self.vars.iter().find(|x| &x.ident == ident) {
+            Some(var.clone())
+        } else {
+            None
+        }
     }
     pub fn parse_prog(&mut self) -> Result<Prog> {
         while self.peek(0).is_some() {
@@ -270,18 +286,28 @@ impl Parser {
                     } else {
                         return Err(self.expected("identifier"));
                     }
-                    if self.vars.iter().find(|x| x.ident == var_data.ident).is_some() {
+                    if self.find_var(&var_data.ident).is_some() {
                         return Err(self.error(ParseErrorType::IdentAlreadyUsed(var_data.ident.clone())));
                     }
                     self.try_consume(&TokenType::Colon)?;
-                    if self.peek(0).is_some() {
-                        var_data.type_ = match self.consume() {
-                            TokenType::Type(type_) => type_,
-                            _ => return Err(self.expected("variable type")),
-                        }
-                    } else {
+
+                    if self.peek(0).is_none() {
                         return Err(self.expected("variable type"));
                     }
+                    var_data.type_ = match self.consume() {
+                        TokenType::Op(Op::Star) => {
+                            if self.peek(0).is_none() {
+                                return Err(self.expected("variable type"));
+                            }
+                            Type::Ptr(match self.consume() {
+                                TokenType::Type(type_) => self.allocator.alloc(type_),
+                                _ => return Err(self.expected("variable type"))
+                            })
+                        }
+                        TokenType::Type(type_) => type_,
+                        _ => return Err(self.expected("variable type")),
+                    };
+
                     self.try_consume(&TokenType::Eq)?;
                     let expr = self.parse_expr(Some(&var_data.type_), 0)?;
                     self.vars.push(var_data.clone());
@@ -291,14 +317,12 @@ impl Parser {
                 }
                 TokenType::Ident(ident) => {
                     if self.peek(1).is_none() {
-                        return Err(self.expected("var declaration or void func call"));
+                        return Err(self.expected("variable reassignment or void func call"));
                     }
                     if self.peek(1).unwrap().type_ == TokenType::Eq {
                         self.consume();
                         self.consume();
-                        let var = if let Some(var) = self.vars.iter().find(|x| x.ident == *ident) {
-                            var.clone()
-                        } else {
+                        let Some(var) = self.find_var(&ident) else {
                             return Err(self.error(ParseErrorType::UndeclaredIdent(ident.clone()))); 
                         };
                         if !var.mutable {
@@ -431,6 +455,22 @@ impl Parser {
         if self.peek(0).is_none() {
             return Err(self.expected("expression"));
         }
+        if let Atom::Addr(ref ident) = *atom {
+            let inner_type = if let Some(var) = self.find_var(ident) {
+                var.type_
+            } else {
+                return Err(self.error(ParseErrorType::UndeclaredIdent(ident.clone())));
+            };
+            if let Some(&Type::Ptr(ref expected_inner_type)) = expected_type {
+                if *expected_inner_type.clone() != inner_type {
+                    return Err(self.error(ParseErrorType::MismatchedTypes));
+                }
+                let expr = self.allocator.alloc(Expr::Atom(atom));
+                return Ok(expr);
+            } else {
+                return Err(self.error(ParseErrorType::MismatchedTypes));
+            }
+        }
         if let Atom::StrLit(_) = *atom {
             if expected_type != Some(&Type::Str) {
                 return Err(self.error(ParseErrorType::MismatchedTypes));
@@ -485,6 +525,9 @@ impl Parser {
             let Some((operator, prec)) = get_prec(cur_token.unwrap().type_) else {
                 break;
             };
+            if !operator.is_bin_op() {
+                return Err(self.expected("binary operator"));
+            }
             if prec < min_prec {
                 break;
             } 
@@ -517,6 +560,16 @@ impl Parser {
                 let expr = self.parse_expr(Some(&Type::Int), 0)?;
                 self.try_consume(&TokenType::CloseParen)?;
                 let atom = self.allocator.alloc(Atom::Paren(expr));
+                Ok(atom)
+            }
+            TokenType::Op(Op::At) => {
+                if self.peek(0).is_none() {
+                    return Err(self.expected("variable identifier"));
+                }
+                let TokenType::Ident(ref ident) = self.consume() else {
+                    return Err(self.expected("variable identifier"));
+                };
+                let atom = self.allocator.alloc(Atom::Addr(ident.clone()));
                 Ok(atom)
             }
             _ => Err(self.expected("atom"))

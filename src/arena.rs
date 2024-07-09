@@ -3,8 +3,11 @@ use std::mem;
 use std::ops::Deref;
 use std::fmt;
 
-#[derive(Clone)]
-pub struct ArenaPtr<T: std::fmt::Debug> {
+#[derive(Clone, PartialEq)]
+pub struct ArenaPtr<T>
+where
+    T: std::fmt::Debug
+{
     ptr: *mut T,
 }
 impl<T: std::fmt::Debug> Deref for ArenaPtr<T> {
@@ -51,7 +54,6 @@ impl ArenaAllocator {
             return None;
         }
         let obj_ptr = self.offset as *mut T;
-        //println!("obj: {obj:?}, obj_sz: {obj_sz}, obj_ptr: {:?}", obj_ptr as usize);
         *obj_ptr = obj;
         self.offset = self.offset.add(obj_sz);
         return Some(obj_ptr);
